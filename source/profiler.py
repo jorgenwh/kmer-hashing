@@ -3,6 +3,5 @@ import cupy as cp
 import time
 
 class Profiler():
-    def __init__(self):
-        pass        
-
+  def __init__(self):
+    pass

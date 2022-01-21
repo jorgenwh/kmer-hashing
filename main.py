@@ -37,7 +37,7 @@ def get_hashes(kmer_arr, power_arr, using_cp=False):
 """
 
 if __name__ == "__main__":
-    file_name = "reads.fa"
-    num_reads = 10000
+  file_name = "reads.fa"
+  num_reads = 10000
 
-    x = fasta_to_matrix(file_name, num_reads)
+  x = fasta_to_matrix(file_name, num_reads)
