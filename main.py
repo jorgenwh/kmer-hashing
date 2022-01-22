@@ -1,6 +1,6 @@
 from source.profiler import Profiler
 
 if __name__ == "__main__":
-  profiler = Profiler(file_name="reads.fa", k=3, num_reads=200000, num_runs=20)
+  profiler = Profiler(file_name="reads.fa", k=3, num_reads=100000, num_runs=20)
   profiler.benchmark()
   profiler.print_results()

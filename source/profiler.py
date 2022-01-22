@@ -59,11 +59,17 @@ class Profiler():
     if reads_matrix.shape[0] != self.num_reads:
       self.num_reads = reads_matrix.shape[0]
     
+    # Run CPU benchmarks
+    print("Running CPU benchmarks ...")
     for i in range(self.num_runs + 3): # 3 'warmup' runs
       np_hashes = self.benchmark_cpu(np.copy(reads_matrix), warmup=i>=3)
+
+    # Run GPU benchmarks
+    print("Running GPU benchmarks ...")
+    for i in range(self.num_runs + 3): # 3 'warmup' runs
       cp_hashes = self.benchmark_gpu(np.copy(reads_matrix), warmup=i>=3)
 
-      assert np.array_equal(cp.asnumpy(cp_hashes), np_hashes), "Resulting hashes from CPU and GPU differ"
+    assert np.array_equal(cp.asnumpy(cp_hashes), np_hashes), "Resulting hashes from CPU and GPU differ"
 
   def benchmark_cpu(self, reads_matrix, warmup):
     # Prepare utility arrays. The timing for this is not counted in the total runtime
