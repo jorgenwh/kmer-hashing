@@ -17,7 +17,7 @@ def fasta_to_matrix(file_name: str, num_reads: int) -> np.ndarray:
 
   # If <num_reads> is greater than the number of reads in the fasta file
   if i < num_reads:
-    print("\33[91mWarning\33[0m: Fasta file contained less reads than <num_reads>. Resulting matrix has shape ({i}, 150).")
+    print(f"\33[91mWarning\33[0m: Fasta file contained less reads than {num_reads}. Resulting matrix has shape ({i}, 150).")
     return reads_matrix[:i, :]
 
   return reads_matrix

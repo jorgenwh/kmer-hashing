@@ -54,6 +54,10 @@ class Profiler():
     """
     # Read the FASTA file to memory. This process seemingly will not change whether CPU or GPU is used as the reads matrix must be read into a numpy array before it can be transferred to the GPU memory
     reads_matrix = fasta_to_matrix(self.file_name, self.num_reads)
+    # If the number of reads are different than expected because the file contained
+    # fewer reads than requested
+    if reads_matrix.shape[0] != self.num_reads:
+      self.num_reads = reads_matrix.shape[0]
     
     for i in range(self.num_runs + 3): # 3 'warmup' runs
       np_hashes = self.benchmark_cpu(np.copy(reads_matrix), warmup=i>=3)
