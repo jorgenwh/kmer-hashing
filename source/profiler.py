@@ -4,241 +4,151 @@ from source.reader import fasta_to_matrix
 from source.kmer_hash_cpu import remap_matrix as remap_matrix_cpu, hash_matrix as hash_matrix_cpu
 from source.kmer_hash_gpu import remap_matrix as remap_matrix_gpu, hash_matrix as hash_matrix_gpu
 
+from collections import defaultdict
 import numpy as np
 import cupy as cp
 import time
 
 class Profiler():
-  """
-  """
-  def __init__(self, file_name, k, num_reads, num_runs):
-    self.file_name = file_name  
+  def __init__(self, file_name, k, num_reads, num_runs, nowarmup):
     self.k = k
     self.num_reads = num_reads
     self.num_runs = num_runs
+    self.warmup_runs = 0 if nowarmup else 3 
+    print(self.warmup_runs)
 
-    # Total runtime to perform matrix remapping + kmer hashing (and mem transfer for GPU)
-    self.full_cpu_runtime_timer = Timer()
-    self.full_gpu_runtime_timer = Timer()
+    self.reads_matrix = fasta_to_matrix(file_name, self.num_reads)
+    if self.reads_matrix.shape[0] != self.num_reads:
+      self.num_reads = self.reads_matrix.shape[0]
 
-    # Time elapsed moving reads matrix to memory (only needs to be done for GPU)
-    self.move_to_gpu_mem_timer = Timer() 
-
-    # Time elapsed to remap np.ndarray/cp.array
-    self.remap_matrix_cpu_timer = Timer() 
-    self.remap_matrix_gpu_timer = Timer() 
-
-    # Time elapsed to compute the kmer hashes
-    self.hash_cpu_timer = Timer() 
-    self.hash_gpu_timer = Timer() 
-
-    # Time to initialize utility arrays
-    self.util_arrays_cpu_timer = Timer()
-    self.util_arrays_gpu_timer = Timer()
-
-  def reset(self):
-    self.move_to_gpu_mem_timer.reset()
-    self.remap_matrix_cpu_timer.reset()
-    self.remap_matrix_gpu_timer.reset()
-    self.hash_cpu_timer.reset()
-    self.hash_gpu_timer.reset()
+    # Each key represents something that is being timed, and each value is a list
+    # containing its total time elapsed for all runs, its slowest run and its fastest run
+    self.cpu_time_data = {} 
+    self.gpu_time_data = {} 
 
   def benchmark(self):
-    """...
-
-    Args:
-      file_name (str): the FASTA file name containing the reads.
-      k (int): the kmer size.
-      num_reads (int): number of reads to fetch from the FASTA file into one matrix.
-      num_runs (int): number of benchmark runs to measure.
-    """
-    # Read the FASTA file to memory. This process seemingly will not change whether CPU or GPU is used as the reads matrix must be read into a numpy array before it can be transferred to the GPU memory
-    reads_matrix = fasta_to_matrix(self.file_name, self.num_reads)
-    # If the number of reads are different than expected because the file contained
-    # fewer reads than requested
-    if reads_matrix.shape[0] != self.num_reads:
-      self.num_reads = reads_matrix.shape[0]
-    
     # Run CPU benchmarks
     print("Running CPU benchmarks ...")
-    for i in range(self.num_runs + 3): # 3 'warmup' runs
-      np_hashes = self.benchmark_cpu(np.copy(reads_matrix), warmup=i>=3)
+    for i in range(self.num_runs + self.warmup_runs): 
+      np_hashes = self.benchmark_cpu(np.copy(self.reads_matrix), warmup=i<self.warmup_runs)
 
     # Run GPU benchmarks
     print("Running GPU benchmarks ...")
-    for i in range(self.num_runs + 3): # 3 'warmup' runs
-      cp_hashes = self.benchmark_gpu(np.copy(reads_matrix), warmup=i>=3)
+    for i in range(self.num_runs + self.warmup_runs): 
+      cp_hashes = self.benchmark_gpu(np.copy(self.reads_matrix), warmup=i<self.warmup_runs)
 
-    assert np.array_equal(cp.asnumpy(cp_hashes), np_hashes), "Resulting hashes from CPU and GPU differ"
+    assert np.array_equal(np_hashes, cp_hashes), "Resulting hashes from CPU and GPU differ"
+
+  def _add_time_data(self, time_data, device):
+    d = self.cpu_time_data if device == "cpu" else self.gpu_time_data
+    for key in time_data:
+      if key not in d:
+        d[key] = [0, -float("inf"), float("inf")]
+      d[key][0] += time_data[key]
+      d[key][1] = max(time_data[key], d[key][1])
+      d[key][2] = min(time_data[key], d[key][2])
 
   def benchmark_cpu(self, reads_matrix, warmup):
-    # Prepare utility arrays. The timing for this is not counted in the total runtime
-    t1 = time.time_ns()
+    time_data = {}
+    start = time.time_ns()
+
+    # Initialize necessary utility arrays
     from_values = np.array([65, 67, 71, 84, 97, 99, 103, 116], dtype=np.uint64)
     to_values = np.array([0, 1, 3, 2, 0, 1, 3, 2], dtype=np.uint64)
     power_arr = np.power(4, np.arange(self.k, dtype=np.uint64), dtype=np.uint64)
-    t_utils = time.time_ns() - t1
+    time_data["utility-array-init"] = time.time_ns() - start
 
-    total_runtime = 0
-
-    # Measure time to remap matrix
-    t1 = time.time_ns()
+    # Remap reads matrix values
+    ts = time.time_ns()
     reads_matrix = remap_matrix_cpu(reads_matrix, from_values, to_values)
-    t_remap = time.time_ns() - t1
-    total_runtime += t_remap
+    time_data["matrix-remapping"] = time.time_ns() - ts 
 
-    # Measure time to hash kmers
-    t1 = time.time_ns()
+    # Hash the kmers
+    ts = time.time_ns()
     hashes = hash_matrix_cpu(reads_matrix, self.k, power_arr)
-    t_hash = time.time_ns() - t1
-    total_runtime += t_hash
+    time_data["matrix-hashing"] = time.time_ns() - ts 
 
+    time_data["total-time"] = time.time_ns() - start
     if not warmup:
-      self.util_arrays_cpu_timer.add_observation(t_utils / 1e6)
-      self.remap_matrix_cpu_timer.add_observation(t_remap / 1e6)
-      self.hash_cpu_timer.add_observation(t_hash / 1e6)
-      self.full_cpu_runtime_timer.add_observation(total_runtime / 1e6)
-
+      self._add_time_data(time_data, "cpu")
     return hashes
 
   def benchmark_gpu(self, reads_matrix, warmup):
-    # Prepare utility arrays. The timing for this is not counted in the total runtime
-    t1 = time.time_ns()
+    time_data = {}
+    start = time.time_ns()
+
+    # Initialize necessary utility arrays
     from_values = cp.array([65, 67, 71, 84, 97, 99, 103, 116], dtype=cp.uint64)
     to_values = cp.array([0, 1, 3, 2, 0, 1, 3, 2], dtype=cp.uint64)
     power_arr = cp.power(4, cp.arange(self.k, dtype=cp.uint64), dtype=cp.uint64)
-    t_utils = time.time_ns() - t1
+    time_data["utility-array-init"] = time.time_ns() - start
 
-    total_runtime = 0
-
-    # Measure time to transfer reads_matrix to GPU memory
-    t1 = time.time_ns()
+    # Transfer reads matrix to GPU memory
+    ts = time.time_ns()
     reads_matrix = cp.asarray(reads_matrix)
-    t_transfer = time.time_ns() - t1
-    total_runtime += t_transfer
+    time_data["numpy2gpu"] = time.time_ns() - ts 
 
-    # Measure time to remap matrix
-    t1 = time.time_ns()
+    # Remap reads matrix values
+    ts = time.time_ns()
     reads_matrix = remap_matrix_gpu(reads_matrix, from_values, to_values)
-    t_remap = time.time_ns() - t1
-    total_runtime += t_remap
+    time_data["matrix-remapping"] = time.time_ns() - ts 
 
-    # Measure time to hash kmers
-    t1 = time.time_ns()
+    # Hash the kmers
+    ts = time.time_ns()
     hashes = hash_matrix_gpu(reads_matrix, self.k, power_arr)
-    t_hash = time.time_ns() - t1
-    total_runtime += t_hash
+    time_data["matrix-hashing"] = time.time_ns() - ts 
 
+    # Fetch the kmer hashes back from the GPU memory
+    ts = time.time_ns()
+    hashes = cp.asnumpy(hashes)
+    time_data["gpu2numpy"] = time.time_ns() - ts 
+
+    time_data["total-time"] = time.time_ns() - start
     if not warmup:
-      self.util_arrays_gpu_timer.add_observation(t_utils / 1e6)
-      self.move_to_gpu_mem_timer.add_observation(t_transfer / 1e6)
-      self.remap_matrix_gpu_timer.add_observation(t_remap / 1e6)
-      self.hash_gpu_timer.add_observation(t_hash / 1e6)
-      self.full_gpu_runtime_timer.add_observation(total_runtime / 1e6)
-
+      self._add_time_data(time_data, "gpu")
     return hashes
 
   def print_results(self):
-    # CPU variables (mean/+/-)
-    init_util_arrays_cpu = [
-        self.util_arrays_cpu_timer.get_mean_time(),
-        (self.util_arrays_cpu_timer.get_max_time() - self.util_arrays_cpu_timer.get_mean_time()),
-        (self.util_arrays_cpu_timer.get_mean_time() - self.util_arrays_cpu_timer.get_min_time())
-    ]
-    matrix_remap_cpu = [
-        self.remap_matrix_cpu_timer.get_mean_time(),
-        (self.remap_matrix_cpu_timer.get_max_time() - self.remap_matrix_cpu_timer.get_mean_time()),
-        (self.remap_matrix_cpu_timer.get_mean_time() - self.remap_matrix_cpu_timer.get_min_time())
-    ]
-    matrix_hash_cpu = [
-        self.hash_cpu_timer.get_mean_time(),
-        (self.hash_cpu_timer.get_max_time() - self.hash_cpu_timer.get_mean_time()),
-        (self.hash_cpu_timer.get_mean_time() - self.hash_cpu_timer.get_min_time())
-    ]
-    total_runtime_cpu = [
-        self.full_cpu_runtime_timer.get_mean_time(),
-        (self.full_cpu_runtime_timer.get_max_time() - self.full_cpu_runtime_timer.get_mean_time()),
-        (self.full_cpu_runtime_timer.get_mean_time() - self.full_cpu_runtime_timer.get_min_time())
-    ]
-
-    # GPU variables
-    init_util_arrays_gpu = [
-        self.util_arrays_gpu_timer.get_mean_time(),
-        (self.util_arrays_gpu_timer.get_max_time() - self.util_arrays_gpu_timer.get_mean_time()),
-        (self.util_arrays_gpu_timer.get_mean_time() - self.util_arrays_gpu_timer.get_min_time())
-    ]
-    transfer2gpu_mem  = [
-        self.move_to_gpu_mem_timer.get_mean_time(),
-        (self.move_to_gpu_mem_timer.get_max_time() - self.move_to_gpu_mem_timer.get_mean_time()),
-        (self.move_to_gpu_mem_timer.get_mean_time() - self.move_to_gpu_mem_timer.get_min_time())
-    ]
-    matrix_remap_gpu = [
-        self.remap_matrix_gpu_timer.get_mean_time(),
-        (self.remap_matrix_gpu_timer.get_max_time() - self.remap_matrix_gpu_timer.get_mean_time()),
-        (self.remap_matrix_gpu_timer.get_mean_time() - self.remap_matrix_gpu_timer.get_min_time())
-    ]
-    matrix_hash_gpu = [
-        self.hash_gpu_timer.get_mean_time(),
-        (self.hash_gpu_timer.get_max_time() - self.hash_gpu_timer.get_mean_time()),
-        (self.hash_gpu_timer.get_mean_time() - self.hash_gpu_timer.get_min_time())
-    ]
-    total_runtime_gpu = [
-        self.full_gpu_runtime_timer.get_mean_time(),
-        (self.full_gpu_runtime_timer.get_max_time() - self.full_gpu_runtime_timer.get_mean_time()),
-        (self.full_gpu_runtime_timer.get_mean_time() - self.full_gpu_runtime_timer.get_min_time())
-    ]
-
+    import math
+    import os
+    _, width = os.popen("stty size", "r").read().split()
+    width = int(width)
     endc = "\33[0m"
     bold = "\33[1m"
     gray = "\33[2m"
     green = "\33[92m"
     blue = "\33[94m"
 
-    print(f"{gray}----------{endc} {bold}Time Statistics{endc} {gray}----------{endc}")
-    print(f"{blue}k                               : {endc}{bold}{self.k}{endc}")
-    print(f"{blue}Number of reads (of length 150) : {endc}{bold}{self.num_reads}{endc}")
-    print(f"{blue}Runs performed                  : {endc}{bold}{self.num_runs}{endc}\n")
+    print(f"{gray} {''.join(['-' for _ in range(int(math.floor(width - 19) / 2))])} {endc}{bold}Time Statistics{endc}{gray} {''.join(['-' for _ in range(int(math.ceil((width - 19) / 2)))])} {endc}")
+    print(f"  {blue}k{endc}                               : {bold}{self.k}{endc}")
+    print(f"  {blue}Number of reads (of length 150){endc} : {bold}{self.num_reads}{endc}")
+    print(f"  {blue}Runs performed{endc}                  : {bold}{self.num_runs}{endc}")
 
-    print(f"{gray}-------------------------------------{endc}")
-    print(f"{gray}----------------{endc}{green} CPU {endc}{gray}----------------{endc}")
-    print(f"{gray}-------------------------------------{endc}")
+    # CPU
+    print(f"{gray} {''.join(['-' for _ in range(int(width - 2))])} {endc}")
+    print(f"{gray} {''.join(['-' for _ in range(int(math.floor(width - 7) / 2))])} {endc}{bold}{green}CPU{endc}{gray} {''.join(['-' for _ in range(int(math.ceil((width - 7) / 2)))])} {endc}")
+    print(f"{gray} {''.join(['-' for _ in range(int(width - 2))])} {endc}\n")
 
-    print("Initializing utility arrays (not counted in total runtime):")
-    print(f"Mean time   : {bold}{round(init_util_arrays_cpu[0], 5)}{endc} ms")
-    print(f"+ / -       : {bold}{round(init_util_arrays_cpu[1], 5)}{endc} ms / {bold}{round(init_util_arrays_cpu[2], 5)}{endc} ms\n")
+    for key in self.cpu_time_data:
+      mean = round((self.cpu_time_data[key][0] / self.num_runs) / 1e6, 4)
+      p = round((self.cpu_time_data[key][1] - mean) / 1e6, 4)
+      m = round((mean - self.cpu_time_data[key][2]) / 1e6, 4)
 
-    print("Matrix remapping:")
-    print(f"Mean time   : {bold}{round(matrix_remap_cpu[0], 5)}{endc} ms")
-    print(f"+ / -       : {bold}{round(matrix_remap_cpu[1], 5)}{endc} ms / {bold}{round(matrix_remap_cpu[2], 5)}{endc} ms\n")
+      print(f" {gray}-----------{endc} {bold}{key}{endc}:")
+      print(f" mean      : {bold}{mean}{endc} ms")
+      print(f" +/-       : {bold}{p}{endc} ms / {m} ms\n")
 
-    print("Kmer hashing:")
-    print(f"Mean time   : {bold}{round(matrix_hash_cpu[0], 5)}{endc} ms")
-    print(f"+ / -       : {bold}{round(matrix_hash_cpu[1], 5)}{endc} ms / {bold}{round(matrix_hash_cpu[2], 5)}{endc} ms\n")
+    # GPU
+    print(f"{gray} {''.join(['-' for _ in range(int(width - 2))])} {endc}")
+    print(f"{gray} {''.join(['-' for _ in range(int(math.floor(width - 7) / 2))])} {endc}{bold}{green}GPU{endc}{gray} {''.join(['-' for _ in range(int(math.ceil((width - 7) / 2)))])} {endc}")
+    print(f"{gray} {''.join(['-' for _ in range(int(width - 2))])} {endc}")
 
-    print("Total runtime:")
-    print(f"Mean time   : {bold}{round(total_runtime_cpu[0], 5)}{endc} ms")
-    print(f"+ / -       : {bold}{round(total_runtime_cpu[1], 5)}{endc} ms / {bold}{round(total_runtime_cpu[2], 5)}{endc} ms\n")
+    for key in self.gpu_time_data:
+      mean = round((self.gpu_time_data[key][0] / self.num_runs) / 1e6, 4)
+      p = round((self.gpu_time_data[key][1] - mean) / 1e6, 4)
+      m = round((mean - self.gpu_time_data[key][2]) / 1e6, 4)
 
-    print(f"{gray}-------------------------------------{endc}")
-    print(f"{gray}----------------{endc}{green} GPU {endc}{gray}----------------{endc}")
-    print(f"{gray}-------------------------------------{endc}")
+      print(f" {gray}-----------{endc} {bold}{key}{endc}:")
+      print(f" mean      : {bold}{mean}{endc} ms")
+      print(f" +/-       : {bold}{p}{endc} ms / {m} ms\n")
 
-    print("Initializing utility arrays (not counted in total runtime):")
-    print(f"Mean time   : {bold}{round(init_util_arrays_gpu[0], 5)}{endc} ms")
-    print(f"+ / -       : {bold}{round(init_util_arrays_gpu[1], 5)}{endc} ms / {bold}{round(init_util_arrays_gpu[2], 5)}{endc} ms\n")
-
-    print("Data transfer:")
-    print(f"Mean time   : {bold}{round(transfer2gpu_mem[0], 5)}{endc} ms")
-    print(f"+ / -       : {bold}{round(transfer2gpu_mem[1], 5)}{endc} ms / {bold}{round(transfer2gpu_mem[2], 5)}{endc} ms\n")
-
-    print("Matrix remapping:")
-    print(f"Mean time   : {bold}{round(matrix_remap_gpu[0], 5)}{endc} ms")
-    print(f"+ / -       : {bold}{round(matrix_remap_gpu[1], 5)}{endc} ms / {bold}{round(matrix_remap_gpu[2], 5)}{endc} ms\n")
-
-    print("Kmer hashing:")
-    print(f"Mean time   : {bold}{round(matrix_hash_gpu[0], 5)}{endc} ms")
-    print(f"+ / -       : {bold}{round(matrix_hash_gpu[1], 5)}{endc} ms / {bold}{round(matrix_hash_gpu[2], 5)}{endc} ms\n")
-
-    print("Total runtime:")
-    print(f"Mean time   : {bold}{round(total_runtime_gpu[0], 5)}{endc} ms")
-    print(f"+ / -       : {bold}{round(total_runtime_gpu[1], 5)}{endc} ms / {bold}{round(total_runtime_gpu[2], 5)}{endc} ms")

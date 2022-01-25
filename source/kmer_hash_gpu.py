@@ -1,6 +1,4 @@
-
 import cupy as cp
-
 
 def remap_matrix(matrix: cp.array, from_values: cp.array, to_values: cp.array) -> cp.array:
   indices = cp.digitize(matrix.ravel(), from_values, right=True)

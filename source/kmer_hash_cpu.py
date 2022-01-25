@@ -1,6 +1,4 @@
-
 import numpy as np
-
 
 def remap_matrix(matrix: np.ndarray, from_values: np.ndarray, to_values: np.ndarray) -> np.ndarray:
   indices = np.digitize(matrix.ravel(), from_values, right=True)
