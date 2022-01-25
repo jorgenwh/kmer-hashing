@@ -120,9 +120,9 @@ class Profiler():
     blue = "\33[94m"
 
     print(f"{gray} {''.join(['-' for _ in range(int(math.floor(width - 19) / 2))])} {endc}{bold}Time Statistics{endc}{gray} {''.join(['-' for _ in range(int(math.ceil((width - 19) / 2)))])} {endc}")
-    print(f"  {blue}k{endc}                               : {bold}{self.k}{endc}")
-    print(f"  {blue}Number of reads (of length 150){endc} : {bold}{self.num_reads}{endc}")
-    print(f"  {blue}Runs performed{endc}                  : {bold}{self.num_runs}{endc}")
+    print(f"  k                               : {bold}{self.k}{endc}")
+    print(f"  Number of reads (of length 150) : {bold}{self.num_reads}{endc}")
+    print(f"  Runs performed                  : {bold}{self.num_runs}{endc}")
 
     # CPU
     print(f"{gray} {''.join(['-' for _ in range(int(width - 2))])} {endc}")
